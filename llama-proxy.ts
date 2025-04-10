@@ -1,85 +1,46 @@
-const availableModels = [
-  "llama3.1-70b",
-  "llama2-70b-chat",
-  "phi-2",
-];
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
-Deno.serve(async (req: Request): Promise<Response> => {
+const EXA_API_KEY = "fb1167bd-fca7-44ce-9164-7a556c0c7085"; // 替换为你的 EXA 密钥
+
+serve(async (req: Request) => {
   const url = new URL(req.url);
-  const pathname = url.pathname;
-  const clientAuth = req.headers.get("authorization");
+  const query = url.searchParams.get("q");
 
-  if (!clientAuth) {
-    return new Response(JSON.stringify({ error: "Missing Authorization header" }), {
-      status: 401,
+  if (!query) {
+    return new Response(JSON.stringify({ error: "Missing query 'q'" }), {
+      status: 400,
       headers: { "Content-Type": "application/json" },
     });
   }
 
-  // GET /v1/models: 返回可用模型列表
-  if (pathname === "/v1/models" && req.method === "GET") {
-    const models = availableModels.map((id) => ({
-      id,
-      object: "model",
-      created: Date.now(),
-      owned_by: "you",
+  try {
+    const exaRes = await fetch("https://api.exa.ai/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${EXA_API_KEY}`,
+      },
+      body: JSON.stringify({ query, numResults: 5 }),
+    });
+
+    const exaJson = await exaRes.json();
+
+    const results = (exaJson.results ?? []).map((r: any) => ({
+      title: r.title ?? "No title",
+      url: r.url ?? "",
+      content: r.text ?? "", // 修复空内容问题
     }));
 
+    return new Response(JSON.stringify({ results }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (e) {
     return new Response(
-      JSON.stringify({ object: "list", data: models }),
+      JSON.stringify({ error: "EXA API error", detail: String(e) }),
       {
+        status: 500,
         headers: { "Content-Type": "application/json" },
       },
     );
   }
-
-  // POST /v1/chat/completions: 原样转发
-  if (pathname === "/v1/chat/completions" && req.method === "POST") {
-    const body = await req.text(); // 不解析为 JSON，避免破坏 stream 结构
-
-    const forwardReq = new Request("https://api.llmapi.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": clientAuth,
-      },
-      body,
-    });
-
-    try {
-      const llmRes = await fetch(forwardReq);
-      const isStream = llmRes.headers.get("content-type")?.includes("text/event-stream");
-
-      if (isStream && llmRes.body) {
-        return new Response(llmRes.body, {
-          status: llmRes.status,
-          headers: {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-          },
-        });
-      }
-
-      const respBody = await llmRes.text();
-      return new Response(respBody, {
-        status: llmRes.status,
-        headers: {
-          "Content-Type": llmRes.headers.get("Content-Type") || "application/json",
-        },
-      });
-    } catch (err) {
-      console.error("LLMAPI proxy error:", err);
-      return new Response(JSON.stringify({ error: "Proxy failed" }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-  }
-
-  // 未匹配路径
-  return new Response(JSON.stringify({ error: "Not found" }), {
-    status: 404,
-    headers: { "Content-Type": "application/json" },
-  });
 });
